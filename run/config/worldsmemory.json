@@ -1,0 +1,14 @@
+{
+  "commitIntervalTicks": 12000,
+  "maxCommitsPerTick": 4,
+  "scanCooldownMs": 200,
+  "dirtyThreshold": 50,
+  "chainMergeRadius": 16,
+  "postBufferTicks": 5,
+  "explosionRadius": 6,
+  "maxExplosionsParSeconde": 10,
+  "maxBlocsParSnapshot": 10000,
+  "maxSnapshotsEnMemoire": 50,
+  "fenetreGroupageMs": 500,
+  "purgeEnabled": true
+}

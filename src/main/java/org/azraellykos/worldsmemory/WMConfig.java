@@ -1,0 +1,96 @@
+package org.azraellykos.worldsmemory;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import net.fabricmc.loader.api.FabricLoader;
+
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+/**
+ * Singleton config chargé depuis config/worldsmemory.json au démarrage.
+ * Créé avec les valeurs par défaut si le fichier est absent.
+ */
+public final class WMConfig {
+
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static volatile WMConfig INSTANCE;
+
+    // --- Temporal commit (CommitScheduler) ---
+    public int commitIntervalTicks = 10 * 60 * 20;   // 10 minutes
+    public int maxCommitsPerTick   = 4;
+    public long scanCooldownMs     = 200;
+
+    // --- Threshold trigger (DirtyChunkTracker) ---
+    public int dirtyThreshold = 50;
+
+    // --- TNT chain tracking (TntChainTracker) ---
+    public int chainMergeRadius = 16;
+    public int postBufferTicks  = 5;
+    public int explosionRadius  = 6;
+
+    // --- Throttling ---
+    public int  maxExplosionsParSeconde = 10;
+    public int  maxBlocsParSnapshot     = 10_000;
+    public int  maxSnapshotsEnMemoire   = 50;
+    public long fenetreGroupageMs       = 500;
+
+    // --- Purge ---
+    public boolean purgeEnabled = true;
+
+    private WMConfig() {}
+
+    public static WMConfig get() {
+        if (INSTANCE == null) {
+            synchronized (WMConfig.class) {
+                if (INSTANCE == null) INSTANCE = load();
+            }
+        }
+        return INSTANCE;
+    }
+
+    /** Recharge la config depuis le disque (utile après modification manuelle). */
+    public static void reload() {
+        synchronized (WMConfig.class) {
+            INSTANCE = load();
+        }
+    }
+
+    private static WMConfig load() {
+        Path path = configPath();
+        if (Files.exists(path)) {
+            try (Reader r = Files.newBufferedReader(path)) {
+                WMConfig cfg = GSON.fromJson(r, WMConfig.class);
+                if (cfg != null) {
+                    Worldsmemory.LOGGER.info("[WM] Config chargée depuis {}", path);
+                    return cfg;
+                }
+            } catch (IOException e) {
+                Worldsmemory.LOGGER.warn("[WM] Erreur lecture config — valeurs par défaut utilisées", e);
+            }
+        }
+        WMConfig defaults = new WMConfig();
+        defaults.save();
+        return defaults;
+    }
+
+    public void save() {
+        Path path = configPath();
+        try {
+            Files.createDirectories(path.getParent());
+            try (Writer w = Files.newBufferedWriter(path)) {
+                GSON.toJson(this, w);
+            }
+            Worldsmemory.LOGGER.info("[WM] Config écrite : {}", path);
+        } catch (IOException e) {
+            Worldsmemory.LOGGER.warn("[WM] Impossible d'écrire la config", e);
+        }
+    }
+
+    private static Path configPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("worldsmemory.json");
+    }
+}
