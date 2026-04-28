@@ -24,6 +24,8 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.WorldChunk;
 import org.azraellykos.worldsmemory.Worldsmemory;
+import org.azraellykos.worldsmemory.api.RollbackContext;
+import org.azraellykos.worldsmemory.api.WMEvents;
 import org.azraellykos.worldsmemory.commit.DirtyChunkTracker;
 import org.azraellykos.worldsmemory.commit.WorldMemoryState;
 import org.azraellykos.worldsmemory.storage.SnapshotEntry;
@@ -60,6 +62,13 @@ public class RollbackEngine {
 
     public RollbackResult execute(RollbackRequest request) {
         Set<ChunkPos> chunks = request.affectedChunks();
+
+        // --- BEFORE_ROLLBACK — annulable ---
+        RollbackContext ctx = RollbackContext.from(world, request);
+        if (!WMEvents.BEFORE_ROLLBACK.invoker().beforeRollback(ctx)) {
+            Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Annulé par un listener BEFORE_ROLLBACK");
+            return RollbackResult.cancelled("Annulé par un listener externe");
+        }
 
         boolean doFreeze  = request.freezeMode == ZoneFreezeMode.FREEZE_ZONE;
         boolean doWatch   = request.freezeMode == ZoneFreezeMode.CANCEL_IF_MODIFIED;
@@ -118,11 +127,21 @@ public class RollbackEngine {
             if (doFreeze) FrozenZoneManager.unfreeze(world.getRegistryKey(), chunks);
         }
 
+        RollbackResult result;
         if (degraded) {
-            return RollbackResult.degraded(restoredChunks, totalBlocks, restoredEntities,
+            result = RollbackResult.degraded(restoredChunks, totalBlocks, restoredEntities,
                 "Certains chunks n'avaient pas de snapshot disponible");
+        } else {
+            result = RollbackResult.success(restoredChunks, totalBlocks, restoredEntities);
         }
-        return RollbackResult.success(restoredChunks, totalBlocks, restoredEntities);
+
+        // --- AFTER_ROLLBACK ---
+        WMEvents.AFTER_ROLLBACK.invoker().afterRollback(ctx, result);
+        if (result.degraded()) {
+            WMEvents.ON_ROLLBACK_DEGRADED.invoker().onDegraded(ctx, result);
+        }
+
+        return result;
     }
 
     // -------------------------------------------------------------------------
@@ -445,6 +464,83 @@ public class RollbackEngine {
                 }
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Undo support
+    // -------------------------------------------------------------------------
+
+    /**
+     * Captures the current state of each chunk into the CAS without touching the history index.
+     * Call this before {@link #execute} to enable {@link #applyUndo}.
+     */
+    public UndoSnapshot captureUndo(Set<ChunkPos> chunks) {
+        Map<ChunkPos, String> hashes = new HashMap<>();
+        for (ChunkPos pos : chunks) {
+            WorldChunk chunk = world.getChunkManager().getWorldChunk(pos.x, pos.z);
+            if (chunk == null) continue;
+            try {
+                byte[] data = WMChunkSerializer.serialize(chunk);
+                String hash = state.getObjectStore().store(data);
+                hashes.put(pos, hash);
+            } catch (IOException e) {
+                Worldsmemory.LOGGER.warn("[WM] [UNDO] Impossible de capturer chunk {} pour undo", pos, e);
+            }
+        }
+        return new UndoSnapshot(chunks, hashes);
+    }
+
+    /**
+     * Restores chunks from an {@link UndoSnapshot}. Does not fire BEFORE/AFTER_ROLLBACK events.
+     *
+     * @return number of chunks actually restored
+     */
+    public int applyUndo(UndoSnapshot undo) {
+        Set<ChunkPos> affectedChunks = undo.hashByChunk().keySet();
+        FrozenZoneManager.freeze(world.getRegistryKey(), affectedChunks);
+        DirtyChunkTracker.beginRollback();
+        int restored = 0;
+        try {
+            for (Map.Entry<ChunkPos, String> entry : undo.hashByChunk().entrySet()) {
+                try {
+                    byte[] data = state.getObjectStore().load(entry.getValue());
+                    NbtCompound snapshot = WMChunkSerializer.fromBytes(data);
+                    int blocks = applySnapshotToChunk(entry.getKey(), snapshot,
+                        ItemMode.RESTAURER_CONTENEURS, NbtMode.COMPLET);
+                    if (blocks >= 0) restored++;
+                } catch (IOException e) {
+                    Worldsmemory.LOGGER.error("[WM] [UNDO] Erreur hash={} chunk={}",
+                        entry.getValue(), entry.getKey(), e);
+                }
+            }
+        } finally {
+            DirtyChunkTracker.endRollback();
+            FrozenZoneManager.unfreeze(world.getRegistryKey(), affectedChunks);
+        }
+        return restored;
+    }
+
+    /**
+     * Restores only entities for the given chunks — blocks are not touched.
+     * Used by the interactive entity-apply command.
+     */
+    public RollbackResult executeEntityOnly(RollbackRequest request) {
+        Set<ChunkPos> chunks = request.affectedChunks();
+        DirtyChunkTracker.beginRollback();
+        int restoredEntities = 0;
+        boolean degraded = false;
+        try {
+            restoredEntities = restoreEntities(chunks, request);
+        } catch (IOException e) {
+            Worldsmemory.LOGGER.error("[WM] [ROLLBACK] Erreur I/O entités (entity-only)", e);
+            degraded = true;
+        } finally {
+            DirtyChunkTracker.endRollback();
+        }
+        if (degraded) {
+            return RollbackResult.degraded(0, 0, restoredEntities, "Erreur I/O entités");
+        }
+        return RollbackResult.success(0, 0, restoredEntities);
     }
 
     // -------------------------------------------------------------------------
