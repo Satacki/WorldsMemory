@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Stores full entity NBT snapshots per chunk, keyed by timestamp.
@@ -24,9 +26,19 @@ import java.util.List;
 public class EntitySnapshotStore {
 
     private final Path entitiesDir;
+    /** In-memory index updated immediately on capture, before the async disk write completes. */
+    private final ConcurrentHashMap<ChunkPos, CopyOnWriteArrayList<Long>> memIndex = new ConcurrentHashMap<>();
 
     public EntitySnapshotStore(Path worldMemoryDir) {
         this.entitiesDir = worldMemoryDir.resolve("entities");
+    }
+
+    /**
+     * Records the timestamp immediately (on the server thread) so that {@link #getTimestamps}
+     * returns it even before the async disk write in {@link #store} has finished.
+     */
+    public void notifyPending(ChunkPos pos, long timestamp) {
+        memIndex.computeIfAbsent(pos, k -> new CopyOnWriteArrayList<>()).add(timestamp);
     }
 
     public void store(ChunkPos pos, long timestamp, List<NbtCompound> entities) throws IOException {
@@ -57,21 +69,32 @@ public class EntitySnapshotStore {
 
     /**
      * Returns all snapshot timestamps for a chunk, sorted ascending.
-     * Used by Phase 3 to find the latest entity snapshot before a given time.
+     * Merges on-disk timestamps with the in-memory index so that entries captured
+     * moments ago (async write still in-flight) are immediately visible.
      */
     public List<Long> getTimestamps(ChunkPos pos) throws IOException {
-        Path dir = chunkDir(pos);
-        if (!Files.exists(dir)) return Collections.emptyList();
-
         List<Long> timestamps = new ArrayList<>();
-        try (var stream = Files.list(dir)) {
-            stream.filter(p -> p.getFileName().toString().endsWith(".nbt"))
-                  .map(p -> {
-                      String name = p.getFileName().toString();
-                      return Long.parseLong(name.substring(0, name.length() - 4));
-                  })
-                  .forEach(timestamps::add);
+
+        Path dir = chunkDir(pos);
+        if (Files.exists(dir)) {
+            try (var stream = Files.list(dir)) {
+                stream.filter(p -> p.getFileName().toString().endsWith(".nbt"))
+                      .map(p -> {
+                          String name = p.getFileName().toString();
+                          return Long.parseLong(name.substring(0, name.length() - 4));
+                      })
+                      .forEach(timestamps::add);
+            }
         }
+
+        // Add in-memory entries not yet on disk
+        CopyOnWriteArrayList<Long> mem = memIndex.get(pos);
+        if (mem != null) {
+            for (Long ts : mem) {
+                if (!timestamps.contains(ts)) timestamps.add(ts);
+            }
+        }
+
         Collections.sort(timestamps);
         return timestamps;
     }

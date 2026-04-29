@@ -3,6 +3,7 @@ package org.azraellykos.worldsmemory.commit;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtList;
 import net.minecraft.registry.Registries;
@@ -21,6 +22,7 @@ import org.azraellykos.worldsmemory.api.WMEvents;
 import org.azraellykos.worldsmemory.storage.ChunkHistoryIndex;
 import org.azraellykos.worldsmemory.storage.ChunkObjectStore;
 import org.azraellykos.worldsmemory.storage.EntitySnapshotStore;
+import org.azraellykos.worldsmemory.storage.PlayerDeathStore;
 import org.azraellykos.worldsmemory.storage.SeedBaselineStore;
 import org.azraellykos.worldsmemory.storage.SeedDataStore;
 import org.azraellykos.worldsmemory.storage.SnapshotEntry;
@@ -58,6 +60,7 @@ public class WorldMemoryState {
     private final SeedDataStore seedDataStore;
     private final EntitySnapshotStore entityStore;
     private final SpawnpointStore spawnpointStore;
+    private final PlayerDeathStore playerDeathStore;
     final DirtyChunkTracker dirtyTracker;
     private final CommitScheduler scheduler;
     private final ConcurrentHashMap<ChunkPos, CauseModification> immediateQueue = new ConcurrentHashMap<>();
@@ -80,6 +83,7 @@ public class WorldMemoryState {
         this.seedDataStore = new SeedDataStore(worldMemoryDir);
         this.entityStore = new EntitySnapshotStore(worldMemoryDir);
         this.spawnpointStore = new SpawnpointStore(worldMemoryDir);
+        this.playerDeathStore = new PlayerDeathStore(worldMemoryDir);
         try {
             this.spawnpointStore.load();
         } catch (IOException e) {
@@ -234,6 +238,7 @@ public class WorldMemoryState {
      * equipment, custom name, potion effects, tamed status, or passengers.
      */
     public static boolean isInteresting(NbtCompound nbt) {
+        // Mob armor (zombies, skeletons…)
         if (nbt.contains("ArmorItems")) {
             NbtList armor = nbt.getList("ArmorItems", 10);
             for (int i = 0; i < armor.size(); i++) {
@@ -241,6 +246,7 @@ public class WorldMemoryState {
                 if (!id.isEmpty() && !id.equals("minecraft:air")) return true;
             }
         }
+        // Mob holding an item
         if (nbt.contains("HandItems")) {
             NbtList hand = nbt.getList("HandItems", 10);
             for (int i = 0; i < hand.size(); i++) {
@@ -250,15 +256,22 @@ public class WorldMemoryState {
         }
         if (nbt.contains("CustomName")) return true;
         if (nbt.contains("ActiveEffects") && !nbt.getList("ActiveEffects", 10).isEmpty()) return true;
+        // Wolf / cat / parrot — tamed and owned
         if (nbt.contains("Owner")) return true;
+        // Horse / donkey / mule / pig / strider — tamed flag
+        if (nbt.getBoolean("Tame")) return true;
+        // Horse with saddle or armor
+        if (nbt.contains("SaddleItem") && !nbt.getCompound("SaddleItem").isEmpty()) return true;
+        if (nbt.contains("ArmorItem") && !nbt.getCompound("ArmorItem").isEmpty()) return true;
+        // Donkey / mule with chest items
+        if (nbt.getBoolean("ChestedHorse") && nbt.contains("Items") && !nbt.getList("Items", 10).isEmpty()) return true;
         if (nbt.contains("Passengers") && !nbt.getList("Passengers", 10).isEmpty()) return true;
-        // Villager with active trades (regardless of level)
+        // Villager with active trades
         if (nbt.contains("Offers")) return true;
-        // Villager with a real profession at level > 1 (even without trades generated yet)
+        // Villager with any real profession (even level 1 before trades generate)
         if (nbt.contains("VillagerData")) {
-            NbtCompound vd = nbt.getCompound("VillagerData");
-            String profession = vd.getString("profession");
-            if (!profession.isEmpty() && !profession.equals("minecraft:none") && vd.getInt("level") > 1) return true;
+            String profession = nbt.getCompound("VillagerData").getString("profession");
+            if (!profession.isEmpty() && !profession.equals("minecraft:none")) return true;
         }
         return false;
     }
@@ -308,29 +321,83 @@ public class WorldMemoryState {
     }
 
     /**
-     * Captures NBT of an interesting entity just before it dies from a player's attack.
-     * No-op if the entity has no notable NBT (vanilla baseline).
+     * Captures the full entity state of the chunk when a player kills an interesting mob.
+     * Saves ALL entities in the chunk (not just the killed one) so a rollback can restore
+     * the complete chunk state — including the dying entity, which is still alive at this point.
+     * No-op if the killed entity has no notable NBT (vanilla baseline).
      */
-    public void capturePlayerKillEntity(ServerWorld world, Entity entity, UUID playerUuid) {
-        NbtCompound nbt = new NbtCompound();
-        entity.writeNbt(nbt);
-        nbt.putString("id", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+    public void capturePlayerKillEntity(ServerWorld world, Entity killedEntity, UUID playerUuid) {
+        NbtCompound killedNbt = new NbtCompound();
+        killedEntity.writeNbt(killedNbt);
+        killedNbt.putString("id", Registries.ENTITY_TYPE.getId(killedEntity.getType()).toString());
 
-        if (!isInteresting(nbt)) return;
-
-        ChunkPos pos = new ChunkPos(entity.getBlockPos());
+        ChunkPos pos = new ChunkPos(killedEntity.getBlockPos());
         long ts = System.currentTimeMillis();
 
-        if (Worldsmemory.DEBUG_TIMING) {
-            Worldsmemory.LOGGER.info("[WM] [ENTITE] Entité intéressante tuée par joueur {} :", playerUuid);
-            logEntityCapture(entity, nbt);
+        // Capture ALL entities in the chunk so the rollback restores the full state.
+        // Use !isRemoved() instead of isAlive() — ALLOW_DEATH fires after health drops to 0
+        // but before the entity is removed, so LivingEntity.isAlive() already returns false.
+        Box box = new Box(pos.getStartX(), world.getBottomY(), pos.getStartZ(),
+                          pos.getStartX() + 16, world.getTopY(), pos.getStartZ() + 16);
+        List<Entity> entities = world.getEntitiesByClass(Entity.class, box,
+                e -> !(e instanceof PlayerEntity) && !e.isRemoved());
+
+        List<NbtCompound> snapshots = new ArrayList<>(entities.size());
+        for (Entity entity : entities) {
+            NbtCompound nbt = new NbtCompound();
+            entity.writeNbt(nbt);
+            nbt.putString("id", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+            // Entity may have health=0 at this point (lethal hit already applied) —
+            // clamp to 1 so it doesn't die again on restoration.
+            if (nbt.contains("Health") && nbt.getFloat("Health") <= 0f) {
+                nbt.putFloat("Health", 1.0f);
+            }
+            snapshots.add(nbt);
         }
+
+        // Save if the killed entity OR any entity present in the chunk has notable NBT
+        // (e.g. killing a plain zombie near a villager with trades must still save the villager).
+        boolean anyInteresting = isInteresting(killedNbt)
+                || snapshots.stream().anyMatch(WorldMemoryState::isInteresting);
+        if (!anyInteresting) return;
+
+        if (Worldsmemory.DEBUG_TIMING) {
+            Worldsmemory.LOGGER.info("[WM] [ENTITE] Kill joueur {} → snapshot {} entité(s) pour {}", playerUuid, snapshots.size(), pos);
+            logEntityCapture(killedEntity, killedNbt);
+        }
+
+        // Register the timestamp immediately so getTimestamps() returns it before the async write finishes.
+        entityStore.notifyPending(pos, ts);
 
         ioExecutor.submit(() -> {
             try {
-                entityStore.store(pos, ts, List.of(nbt));
+                entityStore.store(pos, ts, snapshots);
             } catch (IOException e) {
-                Worldsmemory.LOGGER.error("[WM] Échec sauvegarde entité (kill joueur) pour {}", pos, e);
+                Worldsmemory.LOGGER.error("[WM] Échec sauvegarde entités (kill joueur) pour {}", pos, e);
+            }
+        });
+    }
+
+    /**
+     * Captures the full NBT of a player just before they die.
+     * Persisted to disk so the player can be restored after a chunk rollback,
+     * even if they reconnected in the meantime (hardcore mode).
+     */
+    public void capturePlayerDeath(ServerPlayerEntity player) {
+        NbtCompound nbt = new NbtCompound();
+        player.writeNbt(nbt);
+        ChunkPos chunk = new ChunkPos(player.getBlockPos());
+        nbt.putInt("WM_DeathChunkX", chunk.x);
+        nbt.putInt("WM_DeathChunkZ", chunk.z);
+        nbt.putLong("WM_DeathTimestamp", System.currentTimeMillis());
+
+        UUID uuid = player.getUuid();
+        ioExecutor.submit(() -> {
+            try {
+                playerDeathStore.save(uuid, nbt);
+                Worldsmemory.LOGGER.info("[WM] [HARDCORE] Mort joueur {} sauvegardée (chunk {})", uuid, chunk);
+            } catch (IOException e) {
+                Worldsmemory.LOGGER.error("[WM] Impossible de sauvegarder la mort du joueur {}", uuid, e);
             }
         });
     }
@@ -569,6 +636,40 @@ public class WorldMemoryState {
     public SeedDataStore getSeedDataStore() { return seedDataStore; }
     public EntitySnapshotStore getEntityStore() { return entityStore; }
     public SpawnpointStore getSpawnpointStore() { return spawnpointStore; }
+    public PlayerDeathStore getPlayerDeathStore() { return playerDeathStore; }
+
+    // --- Entity UUID tracking (snapshot UUID → live UUID after rollback) ---
+
+    private final ConcurrentHashMap<UUID, UUID> entityUuidMapping = new ConcurrentHashMap<>();
+
+    /** Returns the live UUID currently representing the entity originally saved under snapshotUuid. */
+    public UUID getLiveEntityUuid(UUID snapshotUuid) {
+        return entityUuidMapping.getOrDefault(snapshotUuid, snapshotUuid);
+    }
+
+    /** Records that the entity originally saved under snapshotUuid is now alive as liveUuid. */
+    public void setLiveEntityUuid(UUID snapshotUuid, UUID liveUuid) {
+        entityUuidMapping.put(snapshotUuid, liveUuid);
+    }
+
+    // --- Per-chunk WM-spawned entity tracking (prevents temporal paradox) ---
+
+    private final ConcurrentHashMap<ChunkPos, Set<UUID>> wmLiveEntitiesPerChunk = new ConcurrentHashMap<>();
+
+    /** Returns all UUIDs currently alive that were spawned by WM rollback for this chunk. */
+    public Set<UUID> getWmLiveEntities(ChunkPos pos) {
+        return wmLiveEntitiesPerChunk.computeIfAbsent(pos, k -> ConcurrentHashMap.newKeySet());
+    }
+
+    /** Records that a WM rollback spawned (or restored in-place) an entity for this chunk. */
+    public void recordWmSpawn(ChunkPos pos, UUID uuid) {
+        getWmLiveEntities(pos).add(uuid);
+    }
+
+    /** Clears the WM-spawned entity set for this chunk (call before restoring a new snapshot). */
+    public void clearWmLiveEntities(ChunkPos pos) {
+        wmLiveEntitiesPerChunk.remove(pos);
+    }
     public RegistryKey<World> getWorldKey() { return worldKey; }
     public Path getWorldMemoryDir() { return worldMemoryDir; }
     /** False si la session précédente s'est terminée en crash. */

@@ -9,6 +9,8 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
+import net.minecraft.entity.Tameable;
+import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtHelper;
@@ -18,6 +20,7 @@ import net.minecraft.registry.RegistryEntryLookup;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.world.GameMode;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
@@ -34,7 +37,9 @@ import org.azraellykos.worldsmemory.storage.WMChunkSerializer;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -141,7 +146,61 @@ public class RollbackEngine {
             WMEvents.ON_ROLLBACK_DEGRADED.invoker().onDegraded(ctx, result);
         }
 
+        // Restore any hardcore player who died in the rolled-back area
+        checkAndRestoreDeadPlayers(chunks);
+
         return result;
+    }
+
+    // -------------------------------------------------------------------------
+    // Hardcore player restoration
+    // -------------------------------------------------------------------------
+
+    /**
+     * After a rollback, restores any online player whose recorded death chunk
+     * falls within the rolled-back area and who is currently in spectator mode.
+     */
+    private void checkAndRestoreDeadPlayers(Set<ChunkPos> rolledBackChunks) {
+        var deathStore = state.getPlayerDeathStore();
+        for (PlayerEntity p : world.getPlayers()) {
+            if (!(p instanceof ServerPlayerEntity player)) continue;
+            if (player.interactionManager.getGameMode() != GameMode.SPECTATOR) continue;
+            if (!deathStore.hasDeath(player.getUuid())) continue;
+            try {
+                NbtCompound deathNbt = deathStore.load(player.getUuid());
+                if (deathNbt == null) continue;
+                ChunkPos deathChunk = new ChunkPos(
+                    deathNbt.getInt("WM_DeathChunkX"),
+                    deathNbt.getInt("WM_DeathChunkZ")
+                );
+                if (!rolledBackChunks.contains(deathChunk)) continue;
+                applyPlayerDeathRecord(player, deathNbt);
+                deathStore.delete(player.getUuid());
+                Worldsmemory.LOGGER.info("[WM] [HARDCORE] Joueur {} restauré après rollback", player.getUuid());
+            } catch (IOException e) {
+                Worldsmemory.LOGGER.error("[WM] Erreur restauration joueur {}", p.getUuid(), e);
+            }
+        }
+    }
+
+    /** Restores a player's game mode, health, inventory, and position from a death record. */
+    public static void applyPlayerDeathRecord(ServerPlayerEntity player, NbtCompound nbt) {
+        player.changeGameMode(GameMode.SURVIVAL);
+        // Health saved in NBT is 0 — ALLOW_DEATH fires after the fatal hit is applied.
+        // Restore to full health so the player doesn't die again on restoration.
+        player.setHealth(player.getMaxHealth());
+
+        player.getInventory().clear();
+        player.getInventory().readNbt(nbt.getList("Inventory", 10));
+
+        if (nbt.contains("Pos", 9)) {
+            NbtList pos = nbt.getList("Pos", 6);
+            float yaw   = nbt.contains("Rotation", 9) ? nbt.getList("Rotation", 5).getFloat(0) : player.getYaw();
+            float pitch = nbt.contains("Rotation", 9) ? nbt.getList("Rotation", 5).getFloat(1) : player.getPitch();
+            player.teleport(player.getServerWorld(),
+                pos.getDouble(0), pos.getDouble(1), pos.getDouble(2),
+                java.util.Set.of(), yaw, pitch);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -373,35 +432,114 @@ public class RollbackEngine {
                 pos.getStartX(), world.getBottomY(), pos.getStartZ(),
                 pos.getStartX() + 16, world.getTopY(), pos.getStartZ() + 16
             );
-            // Toujours supprimer les entités non-joueur, qu'il y ait un snapshot ou non
+
+            // --- Collect entity NBTs from snapshot (empty if no snapshot or SEED) ---
+            List<NbtCompound> entityNbts = Collections.emptyList();
+            if (!isSeed) {
+                List<Long> timestamps = state.getEntityStore().getTimestamps(pos);
+                if (!timestamps.isEmpty()) {
+                    long targetTs = -1;
+                    for (Long ts : timestamps) {
+                        if (ts <= request.beforeTimestamp) targetTs = ts;
+                    }
+                    if (targetTs >= 0) {
+                        entityNbts = state.getEntityStore().get(pos, targetTs);
+                    }
+                }
+            }
+
+            // --- Kill all WM-spawned entities for this chunk from any previous rollback ---
+            // This prevents the temporal paradox (two entities from different snapshots coexisting).
+            for (UUID wmUuid : state.getWmLiveEntities(pos)) {
+                Entity wmEntity = world.getEntity(wmUuid);
+                if (wmEntity != null && !wmEntity.isRemoved()) wmEntity.discard();
+            }
+            state.clearWmLiveEntities(pos);
+
+            // --- Build teleport set: live entities already in this chunk that we will restore in-place ---
+            // Natural tamed pets (liveUuid == snapUuid, entity never died) are left alone.
+            // WM-spawned entities (liveUuid != snapUuid, assigned a random UUID on spawn) are always tracked.
+            Set<UUID> teleportSet = new HashSet<>();
+            for (NbtCompound nbt : entityNbts) {
+                if (!nbt.containsUuid("UUID")) continue;
+                UUID snapUuid = nbt.getUuid("UUID");
+                UUID liveUuid = state.getLiveEntityUuid(snapUuid);
+                Entity live = world.getEntity(liveUuid);
+                if (live == null || live.isRemoved()) continue;
+                boolean wmSpawned = !liveUuid.equals(snapUuid);
+                if (wmSpawned || !isTamedAndAlive(live)) {
+                    if (new ChunkPos(live.getBlockPos()).equals(pos)) {
+                        teleportSet.add(liveUuid);
+                    }
+                }
+            }
+
+            // --- Remove chunk entities, sparing teleport targets and natural tamed pets ---
             boolean removeItems = (request.entityMode == EntityMode.RESTAURER_TOUT);
             world.getEntitiesByClass(Entity.class, box, e -> {
                 if (e instanceof PlayerEntity) return false;
                 if (!removeItems && e instanceof ItemEntity) return false;
-                return true;
+                if (teleportSet.contains(e.getUuid())) return false;
+                // Natural tamed pets not in the teleport set are left alone
+                return !isTamedAndAlive(e);
             }).forEach(Entity::discard);
 
-            // SEED_ORIGINAL = état de génération, pas d'entités à restaurer
+            // --- Kill WM-tracked entities that wandered to other chunks ---
+            // Never kill natural tamed pets (liveUuid == snapUuid means no prior WM spawn).
+            for (NbtCompound nbt : entityNbts) {
+                if (!nbt.containsUuid("UUID")) continue;
+                UUID snapUuid = nbt.getUuid("UUID");
+                UUID liveUuid = state.getLiveEntityUuid(snapUuid);
+                Entity live = world.getEntity(liveUuid);
+                if (live == null || live.isRemoved()) continue;
+                boolean wmSpawned = !liveUuid.equals(snapUuid);
+                if (wmSpawned || !isTamedAndAlive(live)) {
+                    if (!new ChunkPos(live.getBlockPos()).equals(pos)) live.discard();
+                }
+            }
+
             if (isSeed) continue;
 
-            List<Long> timestamps = state.getEntityStore().getTimestamps(pos);
-            if (timestamps.isEmpty()) continue;
-
-            // Snapshot entités le plus récent avant le timestamp de référence
-            long targetTs = -1;
-            for (Long ts : timestamps) {
-                if (ts <= request.beforeTimestamp) targetTs = ts;
-            }
-            if (targetTs < 0) continue;
-
-            List<NbtCompound> entityNbts = state.getEntityStore().get(pos, targetTs);
+            // --- Restore entities: teleport in-place or spawn new ---
             for (NbtCompound nbt : entityNbts) {
+                String typeId = nbt.getString("id");
+                if (typeId.isEmpty() || SKIP_ENTITY_TYPES.contains(typeId)) continue;
+
+                UUID snapUuid = nbt.containsUuid("UUID") ? nbt.getUuid("UUID") : null;
+
+                if (snapUuid != null) {
+                    UUID liveUuid = state.getLiveEntityUuid(snapUuid);
+                    Entity live = world.getEntity(liveUuid);
+                    if (live != null && !live.isRemoved()) {
+                        boolean wmSpawned = !liveUuid.equals(snapUuid);
+                        // Leave natural tamed pets alone — only skip if not WM-spawned
+                        if (!wmSpawned && isTamedAndAlive(live)) continue;
+                        // Restore NBT in-place, keep live UUID
+                        UUID savedUuid = live.getUuid();
+                        live.readNbt(nbt);
+                        live.setUuid(savedUuid);
+                        state.recordWmSpawn(pos, savedUuid);
+                        count++;
+                        continue;
+                    }
+                }
+
+                // Entity is dead or has no tracked UUID → spawn new
                 Entity spawned = spawnEntityFromNbt(nbt);
-                if (spawned != null) count++;
+                if (spawned != null) {
+                    if (snapUuid != null) state.setLiveEntityUuid(snapUuid, spawned.getUuid());
+                    state.recordWmSpawn(pos, spawned.getUuid());
+                    count++;
+                }
             }
         }
 
         return count;
+    }
+
+    /** Returns true if the entity is a tamed pet that is currently alive — these are never reset or killed by rollback. */
+    private static boolean isTamedAndAlive(Entity entity) {
+        return entity instanceof TameableEntity tameable && tameable.isTamed() && !entity.isRemoved();
     }
 
     /** Types d'entités transitoires/dangereuses à ne jamais restaurer. */
@@ -540,6 +678,8 @@ public class RollbackEngine {
         if (degraded) {
             return RollbackResult.degraded(0, 0, restoredEntities, "Erreur I/O entités");
         }
+        // Also restore any hardcore player who died in the rolled-back area
+        checkAndRestoreDeadPlayers(chunks);
         return RollbackResult.success(0, 0, restoredEntities);
     }
 

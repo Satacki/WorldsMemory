@@ -46,6 +46,17 @@ public class SeedDataStore {
         return Files.exists(dataFile(pos));
     }
 
+    /** Returns the file creation time (millis) of the seed file, or -1 if absent or unreadable. */
+    public long getLastModifiedMillis(ChunkPos pos) {
+        try {
+            Path file = dataFile(pos);
+            if (!Files.exists(file)) return -1L;
+            return Files.getLastModifiedTime(file).toMillis();
+        } catch (IOException e) {
+            return -1L;
+        }
+    }
+
     private Path dataFile(ChunkPos pos) {
         return seedDataDir.resolve(pos.x + "." + pos.z);
     }
