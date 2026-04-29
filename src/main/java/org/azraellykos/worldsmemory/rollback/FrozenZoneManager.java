@@ -9,9 +9,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Registre des zones gelées pendant un rollback actif.
- * Une zone gelée refuse toutes les modifications extérieures (hors moteur de rollback lui-même).
- * Thread-safe : ConcurrentHashMap, utilisé depuis le thread serveur et potentiellement d'autres.
+ * Registry of zones frozen during an active rollback.
+ * A frozen zone rejects all external modifications (the rollback engine itself always writes through).
+ * Thread-safe: backed by ConcurrentHashMap, accessed from the server thread and potentially others.
  */
 public final class FrozenZoneManager {
 

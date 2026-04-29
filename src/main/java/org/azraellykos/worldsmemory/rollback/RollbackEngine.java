@@ -46,10 +46,10 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Moteur de rollback Phase 3 — exécute les opérations de restauration sur le thread serveur.
+ * Phase 3 rollback engine — executes restore operations on the server thread.
  *
- * Granularité : Chunk → Bloc → Entité → Item → NBT
- * Modes       : SEED_ORIGINAL | ETAT_PRECEDENT | DELTA_EXPLOSIONS_ONLY
+ * Granularity: Chunk → Block → Entity → Item → NBT
+ * Modes:       SEED_ORIGINAL | ETAT_PRECEDENT | DELTA_EXPLOSIONS_ONLY
  */
 public class RollbackEngine {
 
@@ -62,17 +62,17 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // Point d'entrée public
+    // Public entry point
     // -------------------------------------------------------------------------
 
     public RollbackResult execute(RollbackRequest request) {
         Set<ChunkPos> chunks = request.affectedChunks();
 
-        // --- BEFORE_ROLLBACK — annulable ---
+        // --- BEFORE_ROLLBACK — cancellable ---
         RollbackContext ctx = RollbackContext.from(world, request);
         if (!WMEvents.BEFORE_ROLLBACK.invoker().beforeRollback(ctx)) {
-            Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Annulé par un listener BEFORE_ROLLBACK");
-            return RollbackResult.cancelled("Annulé par un listener externe");
+            Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Cancelled by BEFORE_ROLLBACK listener");
+            return RollbackResult.cancelled("Cancelled by external listener");
         }
 
         boolean doFreeze  = request.freezeMode == ZoneFreezeMode.FREEZE_ZONE;
@@ -96,12 +96,12 @@ public class RollbackEngine {
 
         try {
             for (ChunkPos chunkPos : chunks) {
-                // CANCEL_IF_MODIFIED : annuler si une modification externe a été détectée.
+                // CANCEL_IF_MODIFIED: abort if an external modification was detected since the watch started.
                 if (doWatch && DirtyChunkTracker.isRollbackCancelled()) {
-                    Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] CANCEL_IF_MODIFIED — modification externe détectée, rollback annulé après {}/{} chunks",
+                    Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] CANCEL_IF_MODIFIED — external modification detected, rollback aborted after {}/{} chunks",
                         restoredChunks, chunks.size());
                     return RollbackResult.degraded(restoredChunks, totalBlocks, restoredEntities,
-                        "Annulé — modification externe détectée pendant le rollback");
+                        "Aborted — external modification detected during rollback");
                 }
                 try {
                     int blocks = restoreBlocks(chunkPos, request);
@@ -112,7 +112,7 @@ public class RollbackEngine {
                         degraded = true;
                     }
                 } catch (IOException e) {
-                    Worldsmemory.LOGGER.error("[WM] [ROLLBACK] Erreur I/O pour chunk {}", chunkPos, e);
+                    Worldsmemory.LOGGER.error("[WM] [ROLLBACK] I/O error for chunk {}", chunkPos, e);
                     degraded = true;
                 }
             }
@@ -121,7 +121,7 @@ public class RollbackEngine {
                 try {
                     restoredEntities = restoreEntities(chunks, request);
                 } catch (IOException e) {
-                    Worldsmemory.LOGGER.error("[WM] [ROLLBACK] Erreur I/O entités", e);
+                    Worldsmemory.LOGGER.error("[WM] [ROLLBACK] I/O error for entities", e);
                     degraded = true;
                 }
             }
@@ -135,7 +135,7 @@ public class RollbackEngine {
         RollbackResult result;
         if (degraded) {
             result = RollbackResult.degraded(restoredChunks, totalBlocks, restoredEntities,
-                "Certains chunks n'avaient pas de snapshot disponible");
+                "Some chunks had no available snapshot");
         } else {
             result = RollbackResult.success(restoredChunks, totalBlocks, restoredEntities);
         }
@@ -204,7 +204,7 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // Dispatch selon le mode
+    // Mode dispatch
     // -------------------------------------------------------------------------
 
     private int restoreBlocks(ChunkPos pos, RollbackRequest request) throws IOException {
@@ -216,7 +216,7 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // ETAT_PRECEDENT — dernier snapshot avant le timestamp
+    // ETAT_PRECEDENT — restore the last snapshot before a given timestamp
     // -------------------------------------------------------------------------
 
     private int restoreEtatPrecedent(ChunkPos pos, long beforeTs, int steps, ItemMode itemMode, NbtMode nbtMode) throws IOException {
@@ -224,23 +224,23 @@ public class RollbackEngine {
         SnapshotEntry entry;
 
         if (beforeTs == Long.MAX_VALUE) {
-            // Reculer de `steps` crans depuis la tête de l'historique.
-            // La tête (last) = état actuel committé.
-            // steps=1 → avant-dernière, steps=2 → avant-avant-dernière, etc.
+            // Step back `steps` snapshots from the head of the history.
+            // The head (last entry) is the current committed state.
+            // steps=1 → second-to-last, steps=2 → two before last, etc.
             int targetIndex = history.size() - 1 - steps;
             if (targetIndex >= 0) {
                 entry = history.get(targetIndex);
             } else {
-                // Pas assez d'entrées pour le nombre de crans demandé — fallback seed.
-                Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Historique insuffisant pour {} (steps={}, dispo={}) — fallback SEED_ORIGINAL",
+                // Not enough history entries for the requested step count — fall back to seed.
+                Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Not enough snapshots for {} (steps={}, available={}) — falling back to SEED_ORIGINAL",
                     pos, steps, history.size());
                 return restoreSeedOriginal(pos, itemMode, nbtMode);
             }
         } else {
-            // Timestamp explicite (ex: explosion) : snapshot juste avant ce moment.
+            // Explicit timestamp (e.g. explosion): find the snapshot just before that moment.
             entry = findSnapshotBefore(pos, beforeTs);
             if (entry == null) {
-                Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] Aucun snapshot avant {} pour {}", beforeTs, pos);
+                Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] No snapshot before {} for {}", beforeTs, pos);
                 return -1;
             }
         }
@@ -252,12 +252,12 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // SEED_ORIGINAL — état de génération du monde
+    // SEED_ORIGINAL — restore the world-generation state
     // -------------------------------------------------------------------------
 
     private int restoreSeedOriginal(ChunkPos pos, ItemMode itemMode, NbtMode nbtMode) throws IOException {
         if (!state.getSeedDataStore().exists(pos)) {
-            Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] Aucune donnée seed pour {}", pos);
+            Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] No seed data for {}", pos);
             return -1;
         }
         byte[] data = state.getSeedDataStore().load(pos);
@@ -267,7 +267,7 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // DELTA_EXPLOSIONS_ONLY — restaure uniquement les blocs modifiés par l'explosion
+    // DELTA_EXPLOSIONS_ONLY — restores only blocks that changed since the pre-snapshot
     // -------------------------------------------------------------------------
 
     private int restoreDelta(ChunkPos pos, long beforeTs) throws IOException {
@@ -276,8 +276,8 @@ public class RollbackEngine {
 
         SnapshotEntry entry;
         if (beforeTs == Long.MAX_VALUE) {
-            // Le dernier snapshot = état post-explosion. Le pré-snapshot = avant-dernier.
-            // S'il n'y a qu'une seule entrée on la prend quand même pour la comparer à l'état actuel.
+            // The most recent snapshot is the post-explosion state; the pre-snapshot is the one before it.
+            // If there is only one entry, use it anyway to diff against the current world state.
             entry = history.size() >= 2 ? history.get(history.size() - 2) : history.get(0);
         } else {
             entry = findSnapshotBefore(pos, beforeTs);
@@ -296,7 +296,7 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // Application complète d'un snapshot au chunk (ETAT_PRECEDENT / SEED_ORIGINAL)
+    // Full snapshot application (ETAT_PRECEDENT / SEED_ORIGINAL)
     // -------------------------------------------------------------------------
 
     private int applySnapshotToChunk(ChunkPos pos, NbtCompound snapshot, ItemMode itemMode, NbtMode nbtMode) {
@@ -334,7 +334,7 @@ public class RollbackEngine {
             }
         }
 
-        // Restauration NBT des block entities + sync client
+        // Restore block entity NBT and notify clients
         if (nbtMode != NbtMode.AUCUN) {
             Worldsmemory.LOGGER.info("[WM] [DBG] snapshotBEs size={} for chunk {}", snapshotBEs.size(), pos);
             for (Map.Entry<BlockPos, NbtCompound> entry : snapshotBEs.entrySet()) {
@@ -384,8 +384,7 @@ public class RollbackEngine {
             SectionData pre = preSections.get(sectionY);
             SectionData cur = curSections.get(sectionY);
 
-            // Si les deux sections sont absentes, rien à faire
-            if (pre == null && cur == null) continue;
+            if (pre == null && cur == null) continue; // Both sections absent — nothing to do
 
             int worldStartY = sectionY << 4;
             for (int ly = 0; ly < 16; ly++) {
@@ -395,7 +394,7 @@ public class RollbackEngine {
                         BlockState curState = cur != null ? cur.getState(lx, ly, lz) : Blocks.AIR.getDefaultState();
 
                         if (!preState.equals(curState)) {
-                            // Ce bloc a changé depuis le pré-snapshot → l'explosion l'a détruit
+                            // Block changed since the pre-snapshot — the explosion destroyed it, restore it
                             BlockPos blockPos = new BlockPos(pos.getStartX() + lx, worldStartY + ly, pos.getStartZ() + lz);
                             world.setBlockState(blockPos, preState, Block.NOTIFY_LISTENERS);
                             restoredBlocks++;
@@ -405,7 +404,7 @@ public class RollbackEngine {
             }
         }
 
-        // Restauration NBT des block entities du pré-snapshot qui ont changé
+        // Restore block entity NBT from the pre-snapshot
         for (Map.Entry<BlockPos, NbtCompound> entry : preBeNbts.entrySet()) {
             BlockEntity be = world.getBlockEntity(entry.getKey());
             if (be != null) {
@@ -420,7 +419,7 @@ public class RollbackEngine {
     }
 
     // -------------------------------------------------------------------------
-    // Restauration des entités
+    // Entity restoration
     // -------------------------------------------------------------------------
 
     private int restoreEntities(Set<ChunkPos> chunks, RollbackRequest request) throws IOException {
@@ -542,11 +541,11 @@ public class RollbackEngine {
         return entity instanceof TameableEntity tameable && tameable.isTamed() && !entity.isRemoved();
     }
 
-    /** Types d'entités transitoires/dangereuses à ne jamais restaurer. */
+    /** Transient or dangerous entity types that are never restored by rollback. */
     private static final java.util.Set<String> SKIP_ENTITY_TYPES = java.util.Set.of(
-        "minecraft:tnt",           // TNT amorcée — exploserait immédiatement
-        "minecraft:falling_block", // Blocs en chute — comportement imprévisible
-        "minecraft:item",          // Items au sol — déjà gérés séparément
+        "minecraft:tnt",           // Primed TNT — would explode immediately on spawn
+        "minecraft:falling_block", // Falling blocks — unpredictable physics behavior
+        "minecraft:item",          // Dropped items — managed separately by the item pipeline
         "minecraft:experience_orb",
         "minecraft:fireball",
         "minecraft:small_fireball",
@@ -559,8 +558,8 @@ public class RollbackEngine {
     );
 
     /**
-     * Crée et spawne une entité depuis son NBT complet.
-     * Attribue un nouvel UUID pour éviter les conflits avec des entités existantes.
+     * Creates and spawns an entity from its full NBT.
+     * Assigns a new random UUID to avoid conflicts with any entity already in the world.
      */
     private Entity spawnEntityFromNbt(NbtCompound nbt) {
         String typeId = nbt.getString("id");
@@ -574,14 +573,14 @@ public class RollbackEngine {
         if (entity == null) return null;
 
         entity.readNbt(nbt);
-        entity.setUuid(UUID.randomUUID()); // Éviter conflits UUID
+        entity.setUuid(UUID.randomUUID()); // New UUID to avoid conflicts with any live entity
 
         if (world.spawnEntity(entity)) return entity;
         return null;
     }
 
     // -------------------------------------------------------------------------
-    // Spawnpoints — réactivation si le bloc de spawn a été restauré
+    // Spawnpoints — reactivate if the spawn block was restored
     // -------------------------------------------------------------------------
 
     private void handleSpawnpoints(ChunkPos pos) {
@@ -594,8 +593,7 @@ public class RollbackEngine {
             if (isValidSpawn) {
                 Worldsmemory.LOGGER.info("[WM] [ROLLBACK] Spawnpoint restauré pour {} @ {}",
                     spawn.playerUuid(), spawn.pos());
-                // Si le joueur est en ligne, son spawnpoint est automatiquement valide
-                // car le bloc de spawn a été restauré
+                // Online players automatically regain a valid spawn since the block now exists again
                 ServerPlayerEntity player = world.getServer().getPlayerManager().getPlayer(spawn.playerUuid());
                 if (player != null) {
                     player.setSpawnPoint(world.getRegistryKey(), spawn.pos(), spawn.angle(), spawn.forced(), false);
@@ -688,9 +686,9 @@ public class RollbackEngine {
     // -------------------------------------------------------------------------
 
     /**
-     * Envoie le BlockEntityUpdatePacket aux joueurs proches.
-     * world.updateListeners envoie seulement le block state — les données BE
-     * (texte d'un panneau, crâne, bannière...) nécessitent un packet séparé.
+     * Sends a BlockEntityUpdatePacket to nearby players.
+     * world.updateListeners only syncs the block state — BE data such as
+     * sign text, skull metadata, or banner patterns requires a separate packet.
      */
     private void syncBeToClients(BlockEntity be, BlockPos pos) {
         var packet = be.toUpdatePacket();
@@ -705,15 +703,15 @@ public class RollbackEngine {
     }
 
     /**
-     * Résout le NBT à appliquer à un block entity selon les modes demandés.
+     * Resolves the NBT to apply to a block entity based on the requested modes.
      *
-     * Règles :
-     *  - Coffre Schrödinger (LootTable présent, Items absent) → restitue uniquement la LootTable.
-     *  - NbtMode.PARTIEL ou ItemMode.IGNORER_CONTENEURS → strip la clé Items.
-     *  - Sinon → NBT complet.
+     * Rules:
+     *  - Schrödinger chest (LootTable present, Items absent) → restore only the LootTable.
+     *  - NbtMode.PARTIEL or ItemMode.IGNORER_CONTENEURS → strip the Items key.
+     *  - Otherwise → full NBT.
      */
     private NbtCompound resolveBeNbt(NbtCompound storedNbt, ItemMode itemMode, NbtMode nbtMode) {
-        // Coffre jamais ouvert → on ne remet que la LootTable (les Items seront générés à l'ouverture)
+        // Never-opened chest → restore only the LootTable so items generate naturally on first open
         if (storedNbt.contains("LootTable") && !storedNbt.contains("Items")) {
             NbtCompound lootOnly = new NbtCompound();
             lootOnly.putString("id", storedNbt.getString("id"));
@@ -727,7 +725,7 @@ public class RollbackEngine {
             return lootOnly;
         }
 
-        // NbtMode.PARTIEL ou ItemMode.IGNORER_CONTENEURS → NBT sans inventaire
+        // PARTIEL mode or IGNORER_CONTENEURS: strip item inventory from the NBT
         boolean stripItems = (nbtMode == NbtMode.PARTIEL) || (itemMode == ItemMode.IGNORER_CONTENEURS);
         if (stripItems && storedNbt.contains("Items")) {
             NbtCompound stripped = storedNbt.copy();
@@ -747,7 +745,7 @@ public class RollbackEngine {
         return found;
     }
 
-    /** Parse les sections NBT d'un snapshot en une map sectionY → SectionData. */
+    /** Parses the sections NBT list from a snapshot into a sectionY → SectionData map. */
     private Map<Integer, SectionData> parseSections(NbtList sectionsNbt, RegistryEntryLookup<net.minecraft.block.Block> blockLookup) {
         Map<Integer, SectionData> map = new HashMap<>();
         for (int i = 0; i < sectionsNbt.size(); i++) {
@@ -769,7 +767,7 @@ public class RollbackEngine {
         return map;
     }
 
-    /** Parse les block entities d'un snapshot en une map BlockPos → NbtCompound. */
+    /** Parses the block entities NBT list from a snapshot into a BlockPos → NbtCompound map. */
     private Map<BlockPos, NbtCompound> parseBlockEntities(NbtList beList) {
         Map<BlockPos, NbtCompound> map = new HashMap<>();
         for (int i = 0; i < beList.size(); i++) {
@@ -779,7 +777,7 @@ public class RollbackEngine {
         return map;
     }
 
-    /** Données d'une section : palette de BlockState + indices 4096. */
+    /** One chunk section: a BlockState palette plus 4096 palette indices (16×16×16). */
     private record SectionData(BlockState[] palette, int[] data) {
         BlockState getState(int lx, int ly, int lz) {
             int idx = ly * 256 + lz * 16 + lx;

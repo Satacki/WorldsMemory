@@ -1,10 +1,10 @@
 package org.azraellykos.worldsmemory.purge;
 
 public enum PurgeType {
-    /** Aucune purge — opération no-op. */
+    /** No purge — no-op. */
     AUCUNE,
-    /** Purge administrative : entrée dans l'audit log obligatoire. */
+    /** Administrative purge: audit log entry is mandatory. */
     ADMINISTRATIVE,
-    /** Purge conditionnelle : pilotée par des policies composables. */
+    /** Conditional purge: driven by composable policies. */
     CONDITIONNELLE
 }

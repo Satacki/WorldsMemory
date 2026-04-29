@@ -10,7 +10,7 @@ import java.nio.file.Path;
  * Stores the "seed baseline" hash for each chunk — the SHA-1 of the chunk's state
  * the very first time it was observed. This hash is never written to the CAS object
  * store; it is the implicit commit-zero referenced by the spec ("Seed = commit zéro
- * implicite, jamais stocké").
+ * implicit baseline, never stored").
  *
  * Layout: {worldMemoryDir}/seed/{cx}.{cz}  (plain UTF-8 text, 40-char hex SHA-1)
  *

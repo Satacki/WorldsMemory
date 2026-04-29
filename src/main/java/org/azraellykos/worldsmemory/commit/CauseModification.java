@@ -25,7 +25,7 @@ public enum CauseModification {
     ENTITE,
     FLUIDE,
     GENERATION,
-    /** Snapshot capturé au redémarrage après un crash — état potentiellement incohérent. */
+    /** Snapshot captured at restart after a crash — state may be inconsistent. */
     POST_CRASH,
     INCONNU;
 

@@ -71,7 +71,7 @@ public class WorldMemoryState {
     private final CrashDetector crashDetector;
     /** Chunks whose pre-modification seed has been captured (or is in-flight) this session. */
     private final Set<ChunkPos> seedCaptured = ConcurrentHashMap.newKeySet();
-    /** True si la session précédente s'est terminée en crash (état potentiellement incohérent). */
+    /** True if the previous session ended cleanly; false if a crash was detected at startup. */
     private volatile boolean estFiable = true;
 
     private WorldMemoryState(RegistryKey<World> worldKey, Path worldMemoryDir) {
@@ -220,8 +220,8 @@ public class WorldMemoryState {
     }
 
     /**
-     * Snapshots immédiat d'un ensemble de chunks (API publique — {@code WorldMemory.snapshot()}).
-     * Bypasse la queue de rate-limit, sans upgrade de cause dans le dirty tracker.
+     * Immediately snapshots a set of chunks (public API — {@code WorldMemory.snapshot()}).
+     * Bypasses the rate-limit queue and does not upgrade the cause in the dirty tracker.
      */
     public void snapshotNow(ServerWorld world, Set<ChunkPos> chunks, CauseModification cause) {
         for (ChunkPos pos : chunks) {
@@ -229,10 +229,6 @@ public class WorldMemoryState {
         }
     }
 
-    /**
-     * Captures the full NBT of all non-player entities in a chunk before an explosion
-     * destroys them. Called on the server thread; disk write is offloaded to ioExecutor.
-     */
     /**
      * Returns true if the entity carries NBT state worth preserving beyond its vanilla baseline:
      * equipment, custom name, potion effects, tamed status, or passengers.
@@ -276,6 +272,10 @@ public class WorldMemoryState {
         return false;
     }
 
+    /**
+     * Captures the full NBT of all non-player entities in a chunk before an explosion
+     * destroys them. Called on the server thread; disk write is offloaded to ioExecutor.
+     */
     private void captureEntitiesForExplosion(ServerWorld world, ChunkPos pos, CauseModification cause) {
         Box box = new Box(pos.getStartX(), world.getBottomY(), pos.getStartZ(),
                           pos.getStartX() + 16, world.getTopY(), pos.getStartZ() + 16);
@@ -518,7 +518,7 @@ public class WorldMemoryState {
                     }
                 }
 
-                // Déclencher AFTER_SNAPSHOT sur le thread serveur (tick suivant).
+                // Fire AFTER_SNAPSHOT on the server thread (next tick).
                 SnapshotContext snapCtx = new SnapshotContext(worldKey, pos, hash, cause, ts);
                 world.getServer().execute(() ->
                     WMEvents.AFTER_SNAPSHOT.invoker().afterSnapshot(snapCtx)
@@ -571,9 +571,9 @@ public class WorldMemoryState {
     // -------------------------------------------------------------------------
 
     /**
-     * Si le chunk a des changements de block entity non encore commités (ex: items dans un coffre),
-     * force un snapshot AVANT que le bloc ne soit remplacé.
-     * Appelé depuis le HEAD injection de setBlockState quand l'état actuel a un BlockEntity.
+     * If the chunk has uncommitted block entity changes (e.g. items in a chest),
+     * forces a snapshot BEFORE the block is replaced.
+     * Called from the HEAD injection of setBlockState when the current block has a BlockEntity.
      */
     public void preCommitIfBeDirty(ServerWorld world, ChunkPos pos) {
         if (dirtyTracker.consumeBeDirty(pos)) {
@@ -592,7 +592,7 @@ public class WorldMemoryState {
      */
     public void preCaptureSeedBeforeFirstChange(ServerWorld world, ChunkPos pos) {
         if (!seedCaptured.add(pos)) return; // Already handled this session
-        // Post-crash : snapshot immédiat du chunk avant toute modification pour figer l'état réel.
+        // Post-crash: take an immediate snapshot before any modification to capture the real current state.
         if (!estFiable) {
             scheduleImmediateCommit(pos, CauseModification.POST_CRASH);
         }
@@ -672,8 +672,8 @@ public class WorldMemoryState {
     }
     public RegistryKey<World> getWorldKey() { return worldKey; }
     public Path getWorldMemoryDir() { return worldMemoryDir; }
-    /** False si la session précédente s'est terminée en crash. */
+    /** Returns false if the previous session ended with a crash. */
     public boolean isEstFiable() { return estFiable; }
-    /** Marque la session comme fiable (après validation manuelle ou redémarrage propre). */
+    /** Marks the session as reliable (after manual validation or a clean restart). */
     public void markFiable() { this.estFiable = true; }
 }

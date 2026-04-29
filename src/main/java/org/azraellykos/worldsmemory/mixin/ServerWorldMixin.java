@@ -23,8 +23,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class ServerWorldMixin {
 
     /**
-     * Bloque les modifications sur une zone gelée par un rollback actif.
-     * Ne bloque pas les setBlockState() du moteur de rollback lui-même.
+     * Blocks block state changes inside a zone frozen by an active rollback.
+     * The rollback engine's own setBlockState() calls are always allowed through.
      */
     @Inject(
         method = "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;II)Z",
@@ -35,7 +35,7 @@ public abstract class ServerWorldMixin {
         BlockPos pos, BlockState state, int flags, int maxUpdateDepth,
         CallbackInfoReturnable<Boolean> cir
     ) {
-        if (DirtyChunkTracker.isRollbackActive()) return; // Le rollback lui-même peut toujours écrire
+        if (DirtyChunkTracker.isRollbackActive()) return; // The rollback engine itself always writes through
 
         World world = (World) (Object) this;
         if (!(world instanceof ServerWorld serverWorld)) return;
@@ -47,8 +47,8 @@ public abstract class ServerWorldMixin {
         WorldMemoryState wms = WorldMemoryState.get(serverWorld.getRegistryKey());
         if (wms != null) {
             wms.preCaptureSeedBeforeFirstChange(serverWorld, chunkPos);
-            // Si un block entity (coffre, four, etc.) va être remplacé et que son NBT
-            // a changé depuis le dernier commit, forcer un snapshot maintenant.
+            // If a block entity (chest, furnace, etc.) is about to be replaced and its NBT
+            // changed since the last commit, force a snapshot now before the data is lost.
             BlockEntity existingBe = serverWorld.getBlockEntity(pos);
             if (existingBe != null) {
                 wms.preCommitIfBeDirty(serverWorld, chunkPos);

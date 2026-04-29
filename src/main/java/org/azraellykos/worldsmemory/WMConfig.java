@@ -11,8 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Singleton config chargé depuis config/worldsmemory.json au démarrage.
- * Créé avec les valeurs par défaut si le fichier est absent.
+ * Singleton config loaded from config/worldsmemory.json at startup.
+ * Created with default values if the file is absent.
  */
 public final class WMConfig {
 
@@ -52,7 +52,7 @@ public final class WMConfig {
         return INSTANCE;
     }
 
-    /** Recharge la config depuis le disque (utile après modification manuelle). */
+    /** Reloads the config from disk (useful after a manual edit). */
     public static void reload() {
         synchronized (WMConfig.class) {
             INSTANCE = load();
@@ -65,11 +65,11 @@ public final class WMConfig {
             try (Reader r = Files.newBufferedReader(path)) {
                 WMConfig cfg = GSON.fromJson(r, WMConfig.class);
                 if (cfg != null) {
-                    Worldsmemory.LOGGER.info("[WM] Config chargée depuis {}", path);
+                    Worldsmemory.LOGGER.info("[WM] Config loaded from {}", path);
                     return cfg;
                 }
             } catch (IOException e) {
-                Worldsmemory.LOGGER.warn("[WM] Erreur lecture config — valeurs par défaut utilisées", e);
+                Worldsmemory.LOGGER.warn("[WM] Error reading config — using defaults", e);
             }
         }
         WMConfig defaults = new WMConfig();
@@ -84,9 +84,9 @@ public final class WMConfig {
             try (Writer w = Files.newBufferedWriter(path)) {
                 GSON.toJson(this, w);
             }
-            Worldsmemory.LOGGER.info("[WM] Config écrite : {}", path);
+            Worldsmemory.LOGGER.info("[WM] Config written: {}", path);
         } catch (IOException e) {
-            Worldsmemory.LOGGER.warn("[WM] Impossible d'écrire la config", e);
+            Worldsmemory.LOGGER.warn("[WM] Failed to write config", e);
         }
     }
 

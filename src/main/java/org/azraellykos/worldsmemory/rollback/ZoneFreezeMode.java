@@ -1,10 +1,10 @@
 package org.azraellykos.worldsmemory.rollback;
 
 public enum ZoneFreezeMode {
-    /** Gèle la zone pendant le rollback — toute modification extérieure est annulée. */
+    /** Freezes the zone during rollback — any external modification is blocked. */
     FREEZE_ZONE,
-    /** Autorise les modifications extérieures sans avertissement. */
+    /** Allows external modifications without any warning. */
     NO_WARNING,
-    /** Annule le rollback si la zone est modifiée pendant son exécution. */
+    /** Aborts the rollback if the zone is modified while it is running. */
     CANCEL_IF_MODIFIED
 }

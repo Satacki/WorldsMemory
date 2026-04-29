@@ -1,10 +1,10 @@
 package org.azraellykos.worldsmemory.rollback;
 
 public enum NbtMode {
-    /** Restaure le NBT interne complet de chaque bloc/entité. */
+    /** Restores the full internal NBT of each block/entity. */
     COMPLET,
-    /** Restaure la structure mais pas les inventaires. */
+    /** Restores block structure but not inventories. */
     PARTIEL,
-    /** Ne restaure que les états de blocs, sans NBT. */
+    /** Restores block states only, without any NBT data. */
     AUCUN
 }

@@ -5,12 +5,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Détecte les crashs serveur via un fichier sentinelle.
+ * Detects server crashes via a sentinel file.
  *
- * Protocole :
- *   - À l'init du monde : checkAndArm() écrit le sentinel. Si le fichier existait déjà,
- *     la session précédente n'a pas appelé disarm() → crash détecté.
- *   - Au shutdown propre : disarm() supprime le sentinel.
+ * Protocol:
+ *   - On world init: checkAndArm() writes the sentinel. If the file already existed,
+ *     the previous session never called disarm() → crash detected.
+ *   - On clean shutdown: disarm() deletes the sentinel.
  */
 public final class CrashDetector {
 
@@ -21,9 +21,9 @@ public final class CrashDetector {
     }
 
     /**
-     * Vérifie si la session précédente a crashé, puis arme le sentinel pour cette session.
+     * Checks whether the previous session crashed, then arms the sentinel for this session.
      *
-     * @return true si un crash a été détecté (sentinel présent sans disarm préalable)
+     * @return true if a crash was detected (sentinel present without a prior disarm)
      */
     public boolean checkAndArm() throws IOException {
         boolean crashed = Files.exists(sentinel);
@@ -32,7 +32,7 @@ public final class CrashDetector {
         return crashed;
     }
 
-    /** Supprime le sentinel — appelé lors d'un shutdown propre. */
+    /** Deletes the sentinel — called on a clean shutdown. */
     public void disarm() {
         try {
             Files.deleteIfExists(sentinel);

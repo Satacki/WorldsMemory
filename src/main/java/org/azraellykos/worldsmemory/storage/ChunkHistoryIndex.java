@@ -113,7 +113,7 @@ public class ChunkHistoryIndex {
         NbtIo.writeCompressed(root, file.toFile());
     }
 
-    /** Retourne tous les fichiers d'historique existants (pour scan purge). */
+    /** Returns all tracked chunks that have a history file on disk (used by the purge scan). */
     public List<ChunkPos> getAllTrackedChunks() throws IOException {
         if (!Files.exists(historyDir)) return java.util.Collections.emptyList();
         List<ChunkPos> result = new ArrayList<>();

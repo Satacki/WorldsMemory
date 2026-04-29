@@ -9,11 +9,10 @@ import org.azraellykos.worldsmemory.commit.CauseModification;
 import java.util.Set;
 
 /**
- * API publique Phase 2/3 — conservée pour compatibilité descendante.
+ * Public API Phase 2/3 — kept for backwards compatibility.
  *
- * @deprecated Utiliser {@link WorldMemory} (Phase 5) qui offre l'API fluent complète,
- *             les événements {@link WMEvents} et l'enregistrement d'explosifs via
- *             {@link ExplosiveConfig}.
+ * @deprecated Use {@link WorldMemory} (Phase 5) which provides the full fluent API,
+ *             {@link WMEvents} events, and explosive registration via {@link ExplosiveConfig}.
  */
 @Deprecated
 public final class WorldMemoryApi {
@@ -21,10 +20,10 @@ public final class WorldMemoryApi {
     private WorldMemoryApi() {}
 
     /**
-     * Enregistre une classe d'entité explosive.
+     * Registers an explosive entity class.
      *
-     * @deprecated Préférer {@link WorldMemory#registerExplosive(net.minecraft.util.Identifier, ExplosiveConfig)}
-     *             qui accepte un {@code Identifier} et une config complète.
+     * @deprecated Prefer {@link WorldMemory#registerExplosive(net.minecraft.util.Identifier, ExplosiveConfig)}
+     *             which accepts an {@code Identifier} and a full config.
      */
     @Deprecated
     public static void registerExplosion(Class<? extends Entity> entityClass, CauseModification cause) {
@@ -32,9 +31,9 @@ public final class WorldMemoryApi {
     }
 
     /**
-     * Capture un pre-snapshot pour une destruction personnalisée.
+     * Captures a pre-snapshot for a custom destruction.
      *
-     * @deprecated Utiliser {@link WorldMemory#snapshot(ServerWorld, BlockPos, int)} ou
+     * @deprecated Use {@link WorldMemory#snapshot(ServerWorld, BlockPos, int)} or
      *             {@link WorldMemory#snapshotChunks(ServerWorld, Set, CauseModification)}.
      */
     @Deprecated
@@ -43,9 +42,9 @@ public final class WorldMemoryApi {
     }
 
     /**
-     * Capture un pre-snapshot sur un ensemble explicite de chunks.
+     * Captures a pre-snapshot for an explicit set of chunks.
      *
-     * @deprecated Utiliser {@link WorldMemory#snapshotChunks(ServerWorld, Set, CauseModification)}.
+     * @deprecated Use {@link WorldMemory#snapshotChunks(ServerWorld, Set, CauseModification)}.
      */
     @Deprecated
     public static void preSnapshotChunks(ServerWorld world, Set<ChunkPos> chunks, CauseModification cause) {

@@ -19,13 +19,13 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Moteur de purge Phase 4.
+ * Phase 4 purge engine.
  *
- * Invariants :
- *   - Le seed (première entrée / hash seed) est toujours conservé.
- *   - L'entrée la plus récente par chunk est toujours conservée.
- *   - Une purge ADMINISTRATIVE écrit obligatoirement dans l'audit log.
- *   - Après suppression des entrées d'historique, les objets CAS orphelins sont nettoyés.
+ * Invariants:
+ *   - The seed entry (first entry / seed hash) is always kept.
+ *   - The most recent entry per chunk is always kept.
+ *   - An ADMINISTRATIVE purge always writes to the audit log.
+ *   - After history entries are removed, orphaned CAS objects are cleaned up.
  */
 public class PurgeEngine {
 
@@ -41,12 +41,12 @@ public class PurgeEngine {
     }
 
     /**
-     * Exécute une purge.
+     * Executes a purge.
      *
-     * @param type          Type de purge (AUCUNE/ADMINISTRATIVE/CONDITIONNELLE)
-     * @param policy        Policy applicable (null = purge totale hors invariants)
-     * @param operatorNote  Note opérateur pour l'audit log (requise pour ADMINISTRATIVE)
-     * @return              Résumé de l'opération
+     * @param type          Purge type (AUCUNE / ADMINISTRATIVE / CONDITIONNELLE)
+     * @param policy        Filter policy (null = purge everything except invariants)
+     * @param operatorNote  Operator note written to the audit log (required for ADMINISTRATIVE)
+     * @return              Summary of the operation
      */
     public PurgeResult execute(PurgeType type, PurgePolicy policy, String operatorNote) throws IOException {
         if (type == PurgeType.AUCUNE) {
@@ -60,7 +60,7 @@ public class PurgeEngine {
         int chunksAffected = 0;
         int entriesPurged  = 0;
 
-        // Collecte de tous les hashes encore référencés après purge (pour détection orphelins)
+        // Collect all hashes still referenced after the purge (used to detect orphaned CAS objects)
         Set<String> referencedHashes = new HashSet<>();
 
         for (ChunkPos pos : allChunks) {
@@ -89,33 +89,33 @@ public class PurgeEngine {
                 state.getHistoryIndex().rewrite(pos, toKeep);
                 entriesPurged += toPurge.size();
                 chunksAffected++;
-                Worldsmemory.LOGGER.debug("[WM] [PURGE] {} : {} entrée(s) supprimée(s), {} conservée(s)",
+                Worldsmemory.LOGGER.debug("[WM] [PURGE] {} : {} entry/entries removed, {} kept",
                     pos, toPurge.size(), toKeep.size());
             }
 
             for (SnapshotEntry e : toKeep) referencedHashes.add(e.hash());
         }
 
-        // Nettoyage des objets CAS orphelins
+        // Remove orphaned CAS objects no longer referenced by any history entry
         int orphansRemoved = removeOrphanObjects(referencedHashes);
 
-        // Audit log (obligatoire pour ADMINISTRATIVE, optionnel pour CONDITIONNELLE)
+        // Audit log (required for ADMINISTRATIVE, optional for CONDITIONNELLE)
         writeAuditLog(type, operatorNote, chunksAffected, entriesPurged, orphansRemoved);
 
-        Worldsmemory.LOGGER.info("[WM] [PURGE] {} terminée : {} chunk(s), {} entrée(s), {} orphelin(s)",
+        Worldsmemory.LOGGER.info("[WM] [PURGE] {} done: {} chunk(s), {} entry/entries, {} orphan(s)",
             type, chunksAffected, entriesPurged, orphansRemoved);
 
         return new PurgeResult(chunksAffected, entriesPurged, orphansRemoved);
     }
 
     private int removeOrphanObjects(Set<String> referencedHashes) {
-        // Note : le seed data est stocké dans SeedDataStore (dossier séparé), pas dans ChunkObjectStore.
-        // referencedHashes couvre exactement les objets CAS à conserver.
+        // Seed data is stored in SeedDataStore (separate directory), not in ChunkObjectStore.
+        // referencedHashes covers exactly the CAS objects to keep.
         int removed = 0;
         try {
             removed = state.getObjectStore().removeOrphans(referencedHashes);
         } catch (IOException e) {
-            Worldsmemory.LOGGER.warn("[WM] [PURGE] Erreur nettoyage objets orphelins", e);
+            Worldsmemory.LOGGER.warn("[WM] [PURGE] Error cleaning orphaned CAS objects", e);
         }
         return removed;
     }
@@ -129,7 +129,7 @@ public class PurgeEngine {
             Files.writeString(auditLogPath, line,
                 StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            Worldsmemory.LOGGER.warn("[WM] [PURGE] Impossible d'écrire l'audit log", e);
+            Worldsmemory.LOGGER.warn("[WM] [PURGE] Failed to write audit log", e);
         }
     }
 }

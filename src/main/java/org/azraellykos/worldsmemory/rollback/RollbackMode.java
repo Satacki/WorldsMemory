@@ -1,10 +1,10 @@
 package org.azraellykos.worldsmemory.rollback;
 
 public enum RollbackMode {
-    /** Remet le chunk exactement à l'état de génération. Les constructions joueurs sont effacées. */
+    /** Restores the chunk to its exact world-generation state. Player-built structures are erased. */
     SEED_ORIGINAL,
-    /** Remet le dernier snapshot connu avant l'événement. Les constructions joueurs sont préservées. */
+    /** Restores the last known snapshot before the event. Player-built structures are preserved. */
     ETAT_PRECEDENT,
-    /** Restaure uniquement ce que l'explosion a détruit. Les constructions joueurs sont intégralement préservées. */
+    /** Restores only what the explosion destroyed. Player-built structures are fully preserved. */
     DELTA_EXPLOSIONS_ONLY
 }

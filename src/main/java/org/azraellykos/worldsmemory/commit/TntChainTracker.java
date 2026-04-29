@@ -27,10 +27,10 @@ public class TntChainTracker {
     private final WorldMemoryState state;
     private final List<TntChain> activeChains = new ArrayList<>();
     private final Map<UUID, TntChain> entityToChain = new HashMap<>();
-    /** TNT ignorées par le rate limiter — tracquées pour que isTracked() retourne false. */
+    /** TNT entities skipped by the rate limiter — tracked so isTracked() returns false for them. */
     private final Set<UUID> rateLimitedEntities = new HashSet<>();
 
-    // --- Rate limiter : MAX_EXPLOSIONS_PAR_SECONDE ---
+    // --- Rate limiter ---
     private int explosionsThisSecond = 0;
     private int lastExplosionSecond  = -1;
 
@@ -43,14 +43,14 @@ public class TntChainTracker {
      * Must be called from the server thread.
      */
     public void onTntPrimed(ServerWorld world, Vec3d pos, UUID entityId, int fuseTicks, int currentTick) {
-        // Rate limit : ne pas dépasser maxExplosionsParSeconde pré-snapshots par seconde.
+        // Rate limit: cap pre-snapshots at maxExplosionsParSeconde per second.
         int currentSecond = currentTick / 20;
         if (currentSecond != lastExplosionSecond) {
             lastExplosionSecond = currentSecond;
             explosionsThisSecond = 0;
         }
         if (explosionsThisSecond >= WMConfig.get().maxExplosionsParSeconde) {
-            Worldsmemory.LOGGER.debug("[WM] [TNT] Rate limit atteint ({}/s) — TNT {} non pré-snapshotée",
+            Worldsmemory.LOGGER.debug("[WM] [TNT] Rate limit reached ({}/s) — TNT {} not pre-snapshotted",
                 WMConfig.get().maxExplosionsParSeconde, entityId);
             rateLimitedEntities.add(entityId);
             return;
@@ -105,7 +105,7 @@ public class TntChainTracker {
      * The returned chunks are immediately added to the chain's snapshotted and allAffected sets.
      */
     public Set<ChunkPos> claimUnsnapshottedChunks(UUID entityId, Set<ChunkPos> candidates) {
-        if (rateLimitedEntities.contains(entityId)) return candidates; // Fallback : toutes les chunks non couvertes
+        if (rateLimitedEntities.contains(entityId)) return candidates; // Fallback: all candidate chunks are uncovered
         TntChain chain = entityToChain.get(entityId);
         if (chain == null) return candidates;
         Set<ChunkPos> missed = new HashSet<>(candidates);
@@ -122,7 +122,7 @@ public class TntChainTracker {
      * a post-snapshot for all affected chunks.
      */
     public void tick(int currentTick) {
-        // Nettoyer les entités rate-limitées qui ont exploé il y a plus de 5 secondes.
+        // Clear rate-limited entities that exploded more than 5 seconds ago.
         int currentSecond = currentTick / 20;
         if (currentSecond > lastExplosionSecond + 5) {
             rateLimitedEntities.clear();

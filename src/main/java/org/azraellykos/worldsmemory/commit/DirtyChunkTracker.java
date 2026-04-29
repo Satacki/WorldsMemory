@@ -27,14 +27,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class DirtyChunkTracker {
 
     /**
-     * Positionné sur le thread serveur pendant l'exécution du RollbackEngine.
-     * Empêche les appels world.setBlockState() du rollback de relancer des commits.
+     * Set on the server thread while RollbackEngine is running.
+     * Prevents world.setBlockState() calls from the rollback from re-triggering commits.
      */
     private static final ThreadLocal<Boolean> ROLLBACK_ACTIVE = ThreadLocal.withInitial(() -> false);
 
     /**
-     * Mode CANCEL_IF_MODIFIED : quand actif, les modifications hors de la zone rollback
-     * lèvent le flag ROLLBACK_CANCELLED.
+     * CANCEL_IF_MODIFIED mode: when active, modifications outside the rollback zone set ROLLBACK_CANCELLED.
      */
     private static final ThreadLocal<Set<ChunkPos>> CANCEL_WATCH_CHUNKS =
         ThreadLocal.withInitial(Collections::emptySet);
@@ -44,7 +43,7 @@ public class DirtyChunkTracker {
     public static void endRollback()   { ROLLBACK_ACTIVE.set(false); }
     public static boolean isRollbackActive() { return ROLLBACK_ACTIVE.get(); }
 
-    /** Active le cancel watch pour les chunks hors de {@code expectedChunks}. */
+    /** Activates cancel-watch: any modification outside {@code expectedChunks} aborts the rollback. */
     public static void beginCancelWatch(Set<ChunkPos> expectedChunks) {
         ROLLBACK_ACTIVE.set(true);
         CANCEL_WATCH_CHUNKS.set(expectedChunks);
@@ -61,7 +60,7 @@ public class DirtyChunkTracker {
     private final ConcurrentHashMap<ChunkPos, AtomicInteger> changeCounts = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ChunkPos, CauseModification> chunkCauses = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ChunkPos, UUID> chunkUuids = new ConcurrentHashMap<>();
-    /** Chunks où un block entity a changé (markDirty) depuis le dernier commit. */
+    /** Chunks where a block entity changed (markDirty) since the last commit. */
     private final Set<ChunkPos> beDirtyChunks = ConcurrentHashMap.newKeySet();
     private final WorldMemoryState owner;
 
@@ -76,7 +75,7 @@ public class DirtyChunkTracker {
      */
     public void markDirty(ChunkPos pos, CauseModification contextCause) {
         if (ROLLBACK_ACTIVE.get()) {
-            // En mode CANCEL_IF_MODIFIED : si le chunk n'est pas dans la zone rollback, lever le flag.
+            // CANCEL_IF_MODIFIED: if the modified chunk is outside the rollback zone, set the abort flag.
             Set<ChunkPos> expected = CANCEL_WATCH_CHUNKS.get();
             if (!expected.isEmpty() && !expected.contains(pos)) {
                 ROLLBACK_CANCELLED.set(true);
@@ -142,7 +141,7 @@ public class DirtyChunkTracker {
         upgradeCause(pos, cause, null);
     }
 
-    /** Marque le chunk comme ayant un block entity modifié (ex: contenu d'un coffre). */
+    /** Marks the chunk as having a modified block entity (e.g. chest contents changed). */
     public void markBeDirty(ChunkPos pos) {
         if (ROLLBACK_ACTIVE.get()) return;
         beDirtyChunks.add(pos);
