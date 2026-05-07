@@ -3,8 +3,12 @@ package org.azraellykos.worldsmemory.storage;
 import net.minecraft.util.math.ChunkPos;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Stores the "seed baseline" hash for each chunk — the SHA-1 of the chunk's state
@@ -45,6 +49,23 @@ public class SeedBaselineStore {
 
     public boolean hasSeed(ChunkPos pos) {
         return Files.exists(seedFile(pos));
+    }
+
+    /** Returns all chunk positions that have a seed hash recorded. */
+    public List<ChunkPos> getAllTrackedChunks() {
+        if (!Files.exists(seedDir)) return Collections.emptyList();
+        List<ChunkPos> result = new ArrayList<>();
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(seedDir)) {
+            for (Path file : stream) {
+                String[] parts = file.getFileName().toString().split("\\.");
+                if (parts.length == 2) {
+                    try {
+                        result.add(new ChunkPos(Integer.parseInt(parts[0]), Integer.parseInt(parts[1])));
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        } catch (IOException ignored) {}
+        return result;
     }
 
     private Path seedFile(ChunkPos pos) {

@@ -6,6 +6,7 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
 import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.inventory.Inventory;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
@@ -256,11 +257,16 @@ public class RollbackEngine {
     // -------------------------------------------------------------------------
 
     private int restoreSeedOriginal(ChunkPos pos, ItemMode itemMode, NbtMode nbtMode) throws IOException {
-        if (!state.getSeedDataStore().exists(pos)) {
-            Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] No seed data for {}", pos);
+        String seedHash = state.getSeedStore().getSeedHash(pos);
+        if (seedHash == null) {
+            Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] No seed hash for {} — chunk jamais observé", pos);
             return -1;
         }
-        byte[] data = state.getSeedDataStore().load(pos);
+        if (!state.getObjectStore().exists(seedHash)) {
+            Worldsmemory.LOGGER.warn("[WM] [ROLLBACK] Seed data absent du CAS pour {} (hash={})", pos, seedHash.substring(0, 8));
+            return -1;
+        }
+        byte[] data = state.getObjectStore().load(seedHash);
         NbtCompound snapshot = WMChunkSerializer.fromBytes(data);
         Worldsmemory.LOGGER.info("[WM] [ROLLBACK] SEED_ORIGINAL {}", pos);
         return applySnapshotToChunk(pos, snapshot, itemMode, nbtMode);
@@ -350,6 +356,7 @@ public class RollbackEngine {
                     continue;
                 }
                 NbtCompound nbt = resolveBeNbt(rawNbt, itemMode, nbtMode);
+                if (be instanceof Inventory inv) inv.clear();
                 be.readNbt(nbt);
                 be.markDirty();
                 syncBeToClients(be, entry.getKey());
@@ -408,6 +415,7 @@ public class RollbackEngine {
         for (Map.Entry<BlockPos, NbtCompound> entry : preBeNbts.entrySet()) {
             BlockEntity be = world.getBlockEntity(entry.getKey());
             if (be != null) {
+                if (be instanceof Inventory inv) inv.clear();
                 be.readNbt(resolveBeNbt(entry.getValue(), ItemMode.RESTAURER_CONTENEURS, NbtMode.COMPLET));
                 be.markDirty();
                 syncBeToClients(be, entry.getKey());

@@ -13,7 +13,8 @@
     "SnowGolemMixin",
     "SculkSpreadManagerMixin",
     "FlowableFluidMixin",
-    "PlayerSpawnpointMixin"
+    "PlayerSpawnpointMixin",
+    "PlayerSwingMixin"
   ],
   "injectors": {
     "defaultRequire": 1

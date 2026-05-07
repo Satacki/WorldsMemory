@@ -113,6 +113,20 @@ public class ChunkHistoryIndex {
         NbtIo.writeCompressed(root, file.toFile());
     }
 
+    /**
+     * Returns the most-recent snapshot whose timestamp is ≤ {@code targetTimestamp},
+     * or {@code null} if no such snapshot exists for this chunk.
+     */
+    public SnapshotEntry getAtOrBefore(ChunkPos pos, long targetTimestamp) throws IOException {
+        List<SnapshotEntry> history = getHistory(pos);
+        SnapshotEntry best = null;
+        for (SnapshotEntry e : history) {
+            if (e.timestamp() <= targetTimestamp) best = e;
+            else break; // list is ordered chronologically
+        }
+        return best;
+    }
+
     /** Returns all tracked chunks that have a history file on disk (used by the purge scan). */
     public List<ChunkPos> getAllTrackedChunks() throws IOException {
         if (!Files.exists(historyDir)) return java.util.Collections.emptyList();

@@ -109,8 +109,16 @@ public class PurgeEngine {
     }
 
     private int removeOrphanObjects(Set<String> referencedHashes) {
-        // Seed data is stored in SeedDataStore (separate directory), not in ChunkObjectStore.
-        // referencedHashes covers exactly the CAS objects to keep.
+        // Seed states are stored in CAS (since v0.2) — protect all seed hashes from orphan cleanup,
+        // including chunks that have seed data but no history entries.
+        for (ChunkPos pos : state.getSeedStore().getAllTrackedChunks()) {
+            try {
+                String hash = state.getSeedStore().getSeedHash(pos);
+                if (hash != null) referencedHashes.add(hash);
+            } catch (IOException e) {
+                Worldsmemory.LOGGER.warn("[WM] [PURGE] Impossible de lire le hash seed pour {}", pos, e);
+            }
+        }
         int removed = 0;
         try {
             removed = state.getObjectStore().removeOrphans(referencedHashes);

@@ -24,7 +24,6 @@ import org.azraellykos.worldsmemory.storage.ChunkObjectStore;
 import org.azraellykos.worldsmemory.storage.EntitySnapshotStore;
 import org.azraellykos.worldsmemory.storage.PlayerDeathStore;
 import org.azraellykos.worldsmemory.storage.SeedBaselineStore;
-import org.azraellykos.worldsmemory.storage.SeedDataStore;
 import org.azraellykos.worldsmemory.storage.SnapshotEntry;
 import org.azraellykos.worldsmemory.storage.SpawnpointStore;
 import org.azraellykos.worldsmemory.storage.WMChunkSerializer;
@@ -34,7 +33,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.zip.GZIPInputStream;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -57,7 +59,6 @@ public class WorldMemoryState {
     private final ChunkObjectStore objectStore;
     private final ChunkHistoryIndex historyIndex;
     private final SeedBaselineStore seedStore;
-    private final SeedDataStore seedDataStore;
     private final EntitySnapshotStore entityStore;
     private final SpawnpointStore spawnpointStore;
     private final PlayerDeathStore playerDeathStore;
@@ -80,7 +81,6 @@ public class WorldMemoryState {
         this.objectStore = new ChunkObjectStore(worldMemoryDir);
         this.historyIndex = new ChunkHistoryIndex(worldMemoryDir);
         this.seedStore = new SeedBaselineStore(worldMemoryDir);
-        this.seedDataStore = new SeedDataStore(worldMemoryDir);
         this.entityStore = new EntitySnapshotStore(worldMemoryDir);
         this.spawnpointStore = new SpawnpointStore(worldMemoryDir);
         this.playerDeathStore = new PlayerDeathStore(worldMemoryDir);
@@ -472,9 +472,9 @@ public class WorldMemoryState {
                 // --- Seed baseline filter (Phase 1) ---
                 String seedHash = seedStore.getSeedHash(pos);
                 if (seedHash == null) {
-                    // First observation — record hash + store raw bytes for SEED_ORIGINAL rollback.
+                    // First observation — record hash and store seed data in CAS.
                     seedStore.setSeedHash(pos, hash);
-                    seedDataStore.store(pos, data);
+                    objectStore.storeWithHash(data, hash);
                     if (logThisChunk) {
                         Worldsmemory.LOGGER.info("[WM] [IO] {} cause={} SEED_BASELINE enregistré hash={}",
                                 pos, cause, hash.substring(0, 8));
@@ -605,16 +605,26 @@ public class WorldMemoryState {
         final String hash = HashUtil.sha1(data);
         ioExecutor.submit(() -> {
             try {
-                if (seedStore.getSeedHash(pos) == null) {
-                    // First ever observation — store hash + raw data
+                String existingHash = seedStore.getSeedHash(pos);
+                if (existingHash == null) {
+                    // First ever observation — store hash and seed data in CAS.
                     seedStore.setSeedHash(pos, hash);
-                    seedDataStore.store(pos, data);
+                    objectStore.storeWithHash(data, hash);
                     Worldsmemory.LOGGER.info("[WM] [SEED] Pre-capture {} hash={}", pos, hash.substring(0, 8));
-                } else if (!seedDataStore.exists(pos)) {
-                    // Migration: hash exists from an old session that pre-dates seedDataStore.
-                    // Store current pre-modification state so SEED_ORIGINAL can function.
-                    seedDataStore.store(pos, data);
-                    Worldsmemory.LOGGER.info("[WM] [SEED] Migration seed_data {} (état pré-modif)", pos);
+                } else if (!objectStore.exists(existingHash)) {
+                    // v0.1→v0.2 migration: seed hash exists but data not yet in CAS.
+                    // Try loading from legacy seed_data/ directory first.
+                    Path legacyFile = worldMemoryDir.resolve("seed_data").resolve(pos.x + "." + pos.z);
+                    if (Files.exists(legacyFile)) {
+                        try (InputStream in = new GZIPInputStream(Files.newInputStream(legacyFile))) {
+                            objectStore.storeWithHash(in.readAllBytes(), existingHash);
+                        }
+                        Files.deleteIfExists(legacyFile);
+                        Worldsmemory.LOGGER.info("[WM] [SEED] Migration v0.1→v0.2 {} → CAS (legacy supprimé)", pos);
+                    } else {
+                        objectStore.storeWithHash(data, existingHash);
+                        Worldsmemory.LOGGER.warn("[WM] [SEED] Migration v0.1→v0.2 {} : seed_data absent, état actuel utilisé", pos);
+                    }
                 }
             } catch (IOException e) {
                 Worldsmemory.LOGGER.error("[WM] Échec pre-capture seed pour {}", pos, e);
@@ -633,7 +643,6 @@ public class WorldMemoryState {
     public ChunkObjectStore getObjectStore() { return objectStore; }
     public ChunkHistoryIndex getHistoryIndex() { return historyIndex; }
     public SeedBaselineStore getSeedStore() { return seedStore; }
-    public SeedDataStore getSeedDataStore() { return seedDataStore; }
     public EntitySnapshotStore getEntityStore() { return entityStore; }
     public SpawnpointStore getSpawnpointStore() { return spawnpointStore; }
     public PlayerDeathStore getPlayerDeathStore() { return playerDeathStore; }
